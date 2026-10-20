@@ -154,3 +154,22 @@ This is intentionally a simple demonstration. Detection is based on UDP probe ti
 It demonstrates detection and application-level failover; it is not a general-purpose IPv4 routing protocol that repairs arbitrary routes while preserving a single stable destination IP.
 
 The experiments show faster failure detection in the tested scenarios, but adaptive timeout did not reduce false detections under the tested packet-loss conditions. Additional testing across more network conditions and random seeds would be needed to establish broader reliability.
+
+## Future Work
+
+The following two modifications are planned for future development.
+
+### 1. Intelligent Backup Route Selection
+
+Currently, the simulation switches to a predefined backup destination when the primary path fails. A future extension will support multiple candidate backup routes and dynamically select the most suitable route based on normalized network metrics such as delay, packet loss, and congestion.
+
+A weighted scoring mechanism will be explored to rank candidate routes. The results will be compared against fixed-backup selection and shortest-path routing using metrics such as recovery time, packet loss, and end-to-end delay.
+
+### 2. Dynamic Routing-Table Repair
+
+Currently, failover is implemented at the application level by changing the destination IP address. A future extension will implement routing-level recovery by updating the forwarding state when the primary path fails, while keeping the destination IP unchanged.
+
+This modification will be evaluated using route convergence time, packet loss during recovery, and end-to-end connectivity before and after a failure.
+
+These extensions are planned improvements and have not yet been implemented or evaluated in the current version.
+
