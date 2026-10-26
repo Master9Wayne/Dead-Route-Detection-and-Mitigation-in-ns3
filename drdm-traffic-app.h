@@ -5,6 +5,7 @@
 #include "ns3/event-id.h"
 #include "ns3/socket.h"
 #include "ns3/address.h"
+#include "ns3/callback.h"
 
 #include <string>
 #include <vector>
@@ -41,6 +42,12 @@ public:
 
   void Failover();
 
+  // 0 = application-layer recovery (switch destination IP)
+  // 1 = network-layer recovery (keep destination IP, update routing table)
+  void SetRoutingMode(uint32_t mode);
+  void SetRouteUpdateCallback(Callback<void, uint32_t> callback);
+  uint64_t GetSent() const;
+
 private:
   void StartApplication() override;
   void StopApplication() override;
@@ -53,6 +60,9 @@ private:
 
   uint32_t m_primaryIndex{0};
   uint32_t m_currentIndex{0};
+  uint32_t m_activeIndex{0};
+  uint32_t m_routingMode{0};
+  Callback<void, uint32_t> m_routeCallback;
 
   uint16_t m_port{9000};
   Time m_interval{MilliSeconds(20)};

@@ -243,6 +243,64 @@ MonTick()
   Simulator::Schedule(Seconds(monIntervalSec), &MonTick);
 }
 
+// ---------------------------------------------------------------------------
+// Network-layer recovery (Step 3)
+// ---------------------------------------------------------------------------
+
+static Ptr<Ipv4StaticRouting> recSourceRouting;
+static Ipv4Address recPrimaryDest;
+static Ipv4Address recGateway[MON_BACKUPS + 1];
+static uint32_t recOutIf[MON_BACKUPS + 1];
+static uint32_t recUpdates = 0;
+
+static void
+InstallBackupRoute(uint32_t index)
+{
+  uint32_t count = recSourceRouting->GetNRoutes();
+
+  for (uint32_t r = count; r > 0; r--)
+    {
+      Ipv4RoutingTableEntry entry = recSourceRouting->GetRoute(r - 1);
+      if (entry.IsHost() && entry.GetDest() == recPrimaryDest)
+        {
+          recSourceRouting->RemoveRoute(r - 1);
+        }
+    }
+
+  recSourceRouting->AddHostRouteTo(recPrimaryDest, recGateway[index], recOutIf[index]);
+  recUpdates++;
+
+  NS_LOG_UNCOND(
+      "DRDM: routing table updated at " << Simulator::Now().GetSeconds()
+      << " s: " << recPrimaryDest << " via " << recGateway[index]
+      << " (interface " << recOutIf[index] << ", candidate " << index << ")");
+}
+
+// Service-interruption measurement at the receiver.
+static double rxLastTime = 0.0;
+static double rxMaxGap = 0.0;
+static double rxGapStart = 0.0;
+static uint64_t rxPackets = 0;
+
+static void
+RxTrace(Ptr<const Packet> packet, const Address& from)
+{
+  double now = Simulator::Now().GetSeconds();
+
+  if (rxPackets > 0)
+    {
+      double gap = now - rxLastTime;
+      if (gap > rxMaxGap)
+        {
+          rxMaxGap = gap;
+          rxGapStart = rxLastTime;
+        }
+    }
+
+  rxLastTime = now;
+  rxPackets++;
+}
+
 static void
 KillLink(Ptr<Node> nodeA, Ptr<Node> nodeB, Ptr<NetDevice> devA, Ptr<NetDevice> devB)
 {
@@ -329,6 +387,9 @@ main(int argc, char* argv[])
   uint32_t killBackup = 0;
   double killBackupTime = 3.0;
 
+  // Step 3 option: 1 = routing-table recovery, 0 = application-layer recovery.
+  uint32_t routingRecovery = 1;
+
   CommandLine cmd(__FILE__);
 
   cmd.AddValue(
@@ -397,6 +458,11 @@ main(int argc, char* argv[])
   cmd.AddValue(
       "killBackup", "Backup index (1-3) whose link fails, 0 = none", killBackup);
   cmd.AddValue("killBackupTime", "Time of backup link failure", killBackupTime);
+  cmd.AddValue(
+      "routingRecovery",
+      "1 = recover by updating the routing table (same destination IP), "
+      "0 = recover by switching the application destination IP",
+      routingRecovery);
 
   cmd.Parse(argc, argv);
 
@@ -622,6 +688,33 @@ main(int argc, char* argv[])
       backupIf3.GetAddress(0),
       static_cast<uint32_t>(destOutIf3));
 
+  // Network-layer recovery state: gateway and interface used on the source
+  // for each candidate, and routes on each backup router so it can forward
+  // packets addressed to the primary destination IP to the destination.
+  recSourceRouting = sourceStaticRouting;
+  recPrimaryDest = primaryIf.GetAddress(1);
+
+  recGateway[1] = sourceBackupIf.GetAddress(1);
+  recGateway[2] = sourceBackupIf2.GetAddress(1);
+  recGateway[3] = sourceBackupIf3.GetAddress(1);
+  recOutIf[1] = static_cast<uint32_t>(backupOutIf);
+  recOutIf[2] = static_cast<uint32_t>(backupOutIf2);
+  recOutIf[3] = static_cast<uint32_t>(backupOutIf3);
+
+  Ptr<Ipv4> r1Ipv4 = backupRouter.Get(0)->GetObject<Ipv4>();
+  Ptr<Ipv4> r2Ipv4 = backupRouter2.Get(0)->GetObject<Ipv4>();
+  Ptr<Ipv4> r3Ipv4 = backupRouter3.Get(0)->GetObject<Ipv4>();
+
+  staticRoutingHelper.GetStaticRouting(r1Ipv4)->AddHostRouteTo(
+      recPrimaryDest, backupIf.GetAddress(1),
+      static_cast<uint32_t>(r1Ipv4->GetInterfaceForDevice(backupDestination.Get(0))));
+  staticRoutingHelper.GetStaticRouting(r2Ipv4)->AddHostRouteTo(
+      recPrimaryDest, backupIf2.GetAddress(1),
+      static_cast<uint32_t>(r2Ipv4->GetInterfaceForDevice(backupDestination2.Get(0))));
+  staticRoutingHelper.GetStaticRouting(r3Ipv4)->AddHostRouteTo(
+      recPrimaryDest, backupIf3.GetAddress(1),
+      static_cast<uint32_t>(r3Ipv4->GetInterfaceForDevice(backupDestination3.Get(0))));
+
   PacketSinkHelper sinkHelper(
       "ns3::UdpSocketFactory",
       InetSocketAddress(Ipv4Address::GetAny(), 9000));
@@ -629,6 +722,9 @@ main(int argc, char* argv[])
   ApplicationContainer sink = sinkHelper.Install(destination.Get(0));
   sink.Start(Seconds(0.5));
   sink.Stop(Seconds(stopTime));
+
+  Ptr<PacketSink> dataSink = DynamicCast<PacketSink>(sink.Get(0));
+  dataSink->TraceConnectWithoutContext("Rx", MakeCallback(&RxTrace));
 
   Ptr<DrdmProbeEchoApp> echoServer =
       CreateObject<DrdmProbeEchoApp>();
@@ -689,6 +785,9 @@ main(int argc, char* argv[])
       delayWeight,
       lossWeight,
       congestionWeight);
+
+  traffic->SetRoutingMode(routingRecovery);
+  traffic->SetRouteUpdateCallback(MakeCallback(&InstallBackupRoute));
 
   source.Get(0)->AddApplication(traffic);
   traffic->SetStartTime(Seconds(1.0));
@@ -845,6 +944,16 @@ main(int argc, char* argv[])
 
   Simulator::Stop(Seconds(stopTime));
   Simulator::Run();
+
+  NS_LOG_UNCOND(
+      "DRDM: recovery mode=" << routingRecovery
+      << " (1 = routing table, 0 = application layer), route updates="
+      << recUpdates);
+  NS_LOG_UNCOND(
+      "DRDM: traffic sent=" << traffic->GetSent()
+      << " delivered=" << rxPackets
+      << " longest delivery gap=" << rxMaxGap * 1000.0
+      << " ms starting at " << rxGapStart << " s");
 
   monitor->SerializeToXmlFile(
       "drdm-flowmon.xml", true, true);

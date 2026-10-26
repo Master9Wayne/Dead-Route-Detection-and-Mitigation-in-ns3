@@ -117,6 +117,24 @@ DrdmTrafficApp::UpdateMetrics(uint32_t index,
 }
 
 void
+DrdmTrafficApp::SetRoutingMode(uint32_t mode)
+{
+  m_routingMode = mode;
+}
+
+void
+DrdmTrafficApp::SetRouteUpdateCallback(Callback<void, uint32_t> callback)
+{
+  m_routeCallback = callback;
+}
+
+uint64_t
+DrdmTrafficApp::GetSent() const
+{
+  return m_sent;
+}
+
+void
 DrdmTrafficApp::StartApplication()
 {
   m_running = true;
@@ -172,8 +190,10 @@ DrdmTrafficApp::SendPacket()
   if (m_sent % 25 == 0)
     {
       NS_LOG_UNCOND(
-          "DRDM: sent " << m_sent << " traffic packets via "
-          << m_paths[m_currentIndex].name);
+          "DRDM: sent " << m_sent << " traffic packets to "
+          << InetSocketAddress::ConvertFrom(
+                 m_paths[m_currentIndex].destination).GetIpv4()
+          << " via " << m_paths[m_activeIndex].name);
     }
 
   m_sendEvent = Simulator::Schedule(
@@ -253,12 +273,27 @@ DrdmTrafficApp::SelectBestBackup()
       return;
     }
 
-  m_currentIndex = bestIndex;
-
   NS_LOG_UNCOND(
       "DRDM: selected backup candidate "
-      << m_paths[m_currentIndex].name
+      << m_paths[bestIndex].name
       << " with score=" << bestScore);
+
+  m_activeIndex = bestIndex;
+
+  if (m_routingMode == 1 && !m_routeCallback.IsNull())
+    {
+      // Network-layer recovery: destination IP stays the same, the
+      // routing table is updated so the same destination uses the backup.
+      NS_LOG_UNCOND(
+          "DRDM: network-layer recovery, destination stays "
+          << InetSocketAddress::ConvertFrom(
+                 m_paths[m_currentIndex].destination).GetIpv4());
+      m_routeCallback(bestIndex);
+    }
+  else
+    {
+      m_currentIndex = bestIndex;
+    }
 }
 
 void

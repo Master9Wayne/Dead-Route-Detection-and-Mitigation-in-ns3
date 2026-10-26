@@ -1,114 +1,74 @@
-# DRDM: Dead Route Detection and Mitigation (ns-3.49)
+# DRDM: Dead Route Detection and Mitigation (ns-3)
 
-This is a small multi-file ns-3 example with a primary path and a backup path. It detects primary-path failures using UDP probes and switches application traffic to a backup destination.
+DRDM is an ns-3 example that detects a dead primary path with UDP probes, scores the available backup paths using live measurements, and recovers either at the application layer (switching the destination IP) or at the network layer (updating the routing table so the destination IP stays the same).
+
+The project is built in three steps:
+
+1. **Adaptive RTT-based dead-route detection** (faster, more responsive detection).
+2. **Intelligent backup-path selection** (live delay, loss and congestion scoring).
+3. **Routing-table-based recovery** (mitigation moved from the application layer into the network layer).
+
+## Topology
+
+```
+                 +--> PRIMARY router  --+
+                 |                      |
+ source ---------+--> BACKUP_1 router --+--> destination
+                 |                      |
+                 +--> BACKUP_2 router --+
+                 |                      |
+                 +--> BACKUP_3 router --+
+```
+
+Every path is two point-to-point links. Each link has its own subnet. Backup 2 and Backup 3 use link delays derived from `--backup2DelayMs` and `--backup3DelayMs` when `--liveMetrics=1`.
 
 ## Files
 
-- `drdm.cc`: topology, applications, failure injection, simulation setup, and FlowMonitor configuration.
-- `drdm-probe-app.h/.cc`: sends sequence-numbered UDP probes, measures RTT, calculates fixed or adaptive timeouts, and declares the primary path dead after a configurable number of consecutive timeouts.
-- `drdm-traffic-app.h/.cc`: generates UDP traffic and switches its destination from the primary destination interface to the backup destination interface after detection.
-- `CMakeLists.txt`: builds the source files as one ns-3 scratch example.
+- `drdm.cc`: topology, applications, backup-path monitor, routing-table recovery, failure injection, FlowMonitor.
+- `drdm-probe-app.h/.cc`: sequence-numbered UDP probes, fixed or adaptive timeout (`SRTT + K * RTTVAR`), failure declaration after consecutive misses.
+- `drdm-traffic-app.h/.cc`: traffic generator, candidate-path scoring, failover (application-layer or routing-table).
+- `CMakeLists.txt`: builds the sources as one ns-3 scratch program.
 
-## Install
+## Build and run
 
-Copy the `drdm` directory into `~/ns-3.49/scratch/drdm/`. If you have older files from a previous attempt, move them out of `scratch/` first so they are not compiled as separate scratch programs.
-
-From the ns-3.49 root:
-
-```bash
-./ns3 configure
-./ns3 build
-```
-
-Run the default scenario:
-
-```bash
-./ns3 run "scratch/drdm --failureTime=4 --stopTime=12"
-```
-
-Try changing detection settings:
-
-```bash
-./ns3 run "scratch/drdm --failureTime=4 --stopTime=12 --probeIntervalMs=50 --probeTimeoutMs=30 --threshold=3"
-./ns3 run "scratch/drdm --injectFailure=0 --stopTime=10"
-```
-
-Expected messages include the injected failure, `PRIMARY PATH DECLARED DEAD`, and `switched traffic to backup path`. The program writes `drdm-flowmon.xml`.
-
-## Adaptive Probe Timeout
-
-The original implementation uses a fixed probe timeout. The extended implementation supports an adaptive timeout calculated using the measured round-trip time (RTT) of successful UDP probes.
-
-It maintains two estimates:
-
-- **SRTT:** Smoothed round-trip time.
-- **RTTVAR:** Smoothed variation in round-trip time.
-
-The timeout is calculated as:
-
-```text
-Timeout = SRTT + K * RTTVAR
-```
-
-The default multiplier is `K = 4`. SRTT uses a smoothing factor of `1/8`, while RTTVAR uses `1/4`. The calculated timeout is bounded between 10 ms and 500 ms. The configured timeout is used until the first RTT sample arrives.
-
-The failure threshold remains configurable and defaults to three consecutive missed probes. Keeping this threshold unchanged makes it possible to compare fixed and adaptive timeout behaviour separately.
-
-## Running Fixed and Adaptive Modes
-
-From the ns-3.49 root, using the standard scratch workflow, run the fixed-timeout baseline:
-
-```bash
-./ns3 run "scratch/drdm --failureTime=4 --stopTime=12 --probeTimeoutMs=100 --adaptiveTimeout=false"
-```
-
-Run the adaptive-timeout version:
-
-```bash
-./ns3 run "scratch/drdm --failureTime=4 --stopTime=12 --probeTimeoutMs=100 --adaptiveTimeout=true --timeoutMultiplier=4"
-```
-
-The extended implementation also supports these experiment parameters:
-
-- `--linkDelayMs`: Propagation delay per point-to-point link.
-- `--jitterMs`: Maximum extra random delay applied to probe replies.
-- `--lossRate`: Packet-loss probability on the primary-router-to-destination link, applied in both directions.
-- `--probeIntervalMs`: Interval between probes.
-- `--probeTimeoutMs`: Fixed timeout or initial timeout before RTT estimation.
-- `--threshold`: Consecutive missed probes required to declare a failure.
-- `--timeoutMultiplier`: Multiplier `K` in the adaptive timeout formula.
-- `--injectFailure=false`: Runs without injecting an actual link failure.
-- `--seed` and `--runNumber`: Configure random-number generation for repeatable simulations.
-
-Adaptive mode prints RTT, SRTT, RTTVAR, the selected multiplier, and the calculated timeout. FlowMonitor statistics are written to `drdm-flowmon.xml` in the current working directory.
-
-### Local ns-3-dev Build
-
-For a local setup with the project located at `~/ns-3-dev/scratch/drdm-project`, build it from the ns-3-dev root:
+From the ns-3-dev root, with the project in `scratch/drdm-project/`:
 
 ```bash
 ninja -C cmake-cache scratch_drdm-project_drdm
 ```
 
-Run the fixed baseline:
+Run the default scenario (routing-table recovery):
+
+```bash
+./build/scratch/drdm/ns3-dev-drdm-default --failureTime=6 --stopTime=12 --killBackup=1 --killBackupTime=3
+```
+
+Run the same scenario with application-layer recovery for comparison:
+
+```bash
+./build/scratch/drdm/ns3-dev-drdm-default --failureTime=6 --stopTime=12 --killBackup=1 --killBackupTime=3 --routingRecovery=0
+```
+
+## Step 1: Adaptive probe timeout
+
+The fixed-timeout detector is extended with an adaptive timeout calculated from the RTT of successful probes:
+
+```text
+Timeout = SRTT + K * RTTVAR
+```
+
+SRTT uses a smoothing factor of 1/8 and RTTVAR uses 1/4. The default multiplier is `K = 4`. The timeout is bounded between 10 ms and 500 ms. The configured timeout is used until the first RTT sample arrives. The failure threshold defaults to three consecutive missed probes.
+
+Run fixed and adaptive modes:
 
 ```bash
 ./build/scratch/drdm/ns3-dev-drdm-default --failureTime=4 --stopTime=12 --probeTimeoutMs=100 --adaptiveTimeout=false
-```
-
-Run adaptive mode:
-
-```bash
 ./build/scratch/drdm/ns3-dev-drdm-default --failureTime=4 --stopTime=12 --probeTimeoutMs=100 --adaptiveTimeout=true --timeoutMultiplier=4
 ```
 
-## Experimental Results
+### Results: stable propagation delays
 
-The experiments compare the original fixed timeout with adaptive RTT-based timeout detection. The failure threshold remained at three consecutive missed probes.
-
-### 1. Stable Propagation Delays
-
-These tests used a 100 ms probe interval, a 100 ms fixed timeout, a failure time of 4 seconds, and no added jitter or packet loss.
+100 ms probe interval, 100 ms fixed timeout, failure at 4 s, no jitter or loss.
 
 | Delay per link | Fixed detection latency | Adaptive detection latency |
 |---:|---:|---:|
@@ -117,13 +77,9 @@ These tests used a 100 ms probe interval, a 100 ms fixed timeout, a failure time
 | 10 ms | 300 ms | 240.28 ms |
 | 20 ms | 300 ms | 280.30 ms |
 
-Detection latency is measured relative to the injected failure at 4 seconds. Adaptive timeout reduced detection latency in all four tested scenarios.
+### Results: jitter and packet loss
 
-### 2. Jitter and Packet Loss
-
-The implementation was also tested with 20 ms maximum additional probe-reply jitter and 5% primary-link packet loss.
-
-Across 30 runs per mode:
+20 ms maximum probe-reply jitter and 5% primary-link packet loss, 30 runs per mode.
 
 | Metric | Fixed timeout | Adaptive timeout (`K = 4`) |
 |---|---:|---:|
@@ -133,11 +89,11 @@ Across 30 runs per mode:
 | Missed detections | 0/30 | 0/30 |
 | Average latency for correct detections | 296.43 ms | 235.53 ms |
 
-Under these conditions, adaptive timeout reduced average detection latency by approximately 60.9 ms, or 20.5%, among runs that detected the failure after it occurred. It did not reduce the observed false-detection rate under packet loss.
+Adaptive timeout reduced average detection latency by about 60.9 ms (20.5%) among runs that detected the failure after it occurred. It did not reduce false detections under packet loss.
 
-### 3. Multiplier Comparison
+### Results: multiplier comparison
 
-An initial 10-run comparison tested `K = 2`, `K = 4`, and `K = 6` with 20 ms maximum jitter and 5% packet loss.
+10 runs each with 20 ms jitter and 5% packet loss.
 
 | Multiplier | Healthy-path false detections | Premature detections during failure tests |
 |---:|---:|---:|
@@ -145,31 +101,63 @@ An initial 10-run comparison tested `K = 2`, `K = 4`, and `K = 6` with 20 ms max
 | 4 | 2/10 | 1/10 |
 | 6 | 2/10 | 1/10 |
 
-`K = 4` was retained as the default candidate because it had the same observed false-detection counts as `K = 6` while detecting failures slightly earlier in these preliminary trials. These results do not establish a universally optimal multiplier.
+`K = 4` was kept as the default. These results do not establish a universally optimal multiplier.
 
-## Scope / Limitations
+## Step 2: Intelligent backup-path selection
 
-This is intentionally a simple demonstration. Detection is based on UDP probe timeouts. Mitigation is implemented by changing the traffic application's destination IP to the destination's backup-link interface address.
+Every backup path is probed continuously (`--monIntervalMs`, default 100 ms) through the same network the traffic uses. Three metrics are measured per backup:
 
-It demonstrates detection and application-level failover; it is not a general-purpose IPv4 routing protocol that repairs arbitrary routes while preserving a single stable destination IP.
+- **Delay:** half of the smoothed RTT (SRTT with factor 1/8), in ms.
+- **Loss:** exponentially weighted moving average of missed probes (each miss adds 20%, each reply decays it).
+- **Congestion:** RTT inflation over the lowest observed RTT, `(SRTT - minRTT) / minRTT`, capped at 1.
 
-The experiments show faster failure detection in the tested scenarios, but adaptive timeout did not reduce false detections under the tested packet-loss conditions. Additional testing across more network conditions and random seeds would be needed to establish broader reliability.
+A backup that misses `--monThreshold` (default 3) consecutive probes is marked dead and is never selected.
 
-## Future Work
+At failover each live backup is scored and the lowest score wins:
 
-The following two modifications are planned for future development.
+```text
+score = wDelay * (delay / maxDelay) + wLoss * loss + wCongestion * congestion
+```
 
-### 1. Intelligent Backup Route Selection
+Delay is normalized by the largest delay among all candidates. Loss and congestion are already in [0, 1]. The weights default to 0.5, 0.3 and 0.2, are normalized to sum to 1, and are set with `--delayWeight`, `--lossWeight` and `--congestionWeight`.
 
-Currently, the simulation switches to a predefined backup destination when the primary path fails. A future extension will support multiple candidate backup routes and dynamically select the most suitable route based on normalized network metrics such as delay, packet loss, and congestion.
+Test options:
 
-A weighted scoring mechanism will be explored to rank candidate routes. The results will be compared against fixed-backup selection and shortest-path routing using metrics such as recovery time, packet loss, and end-to-end delay.
+- `--liveMetrics=0`: use the configured metrics instead of measured ones.
+- `--bgBackup=N --bgRateMbps=R --bgStart=T --bgStop=T`: inject background load on backup N.
+- `--killBackup=N --killBackupTime=T`: fail the link of backup N.
+- `--backup2LossRate`, `--backup3LossRate`: real packet loss on backups 2 and 3.
 
-### 2. Dynamic Routing-Table Repair
+Verified in simulation: with Backup 1 killed at 3 s, Backup 1 is marked dead and skipped at failover, and the best remaining backup (Backup 2) is selected. With background load on Backup 1, its measured congestion rises and its score reflects it. Probe replies are pinned to the matching backup router so a primary failure does not corrupt backup measurements.
 
-Currently, failover is implemented at the application level by changing the destination IP address. A future extension will implement routing-level recovery by updating the forwarding state when the primary path fails, while keeping the destination IP unchanged.
+## Step 3: Routing-table-based recovery
 
-This modification will be evaluated using route convergence time, packet loss during recovery, and end-to-end connectivity before and after a failure.
+In routing-table mode (`--routingRecovery=1`, the default) the traffic application never changes its destination IP. The traffic always goes to the primary destination address. When the primary path is declared dead:
 
-These extensions are planned improvements and have not yet been implemented or evaluated in the current version.
+1. The best live backup is chosen with the Step 2 scoring.
+2. The source node's routing table is updated: any existing host route for the primary destination is removed, and a host route for the same destination IP is installed through the chosen backup's gateway and interface.
+3. Each backup router already has a route for the primary destination IP that forwards it to the destination, so the destination is reached over the backup path.
 
+With `--routingRecovery=0` the original behavior is kept: the application switches its destination to the backup's own address.
+
+At the end of a run the program prints the recovery mode, the number of route updates, packets sent and delivered, and the longest gap in packet delivery at the receiver (the service interruption) with the time it started.
+
+Expected log lines:
+
+```text
+DRDM: PRIMARY PATH DECLARED DEAD at ...
+DRDM: selected backup candidate BACKUP_x with score=...
+DRDM: network-layer recovery, destination stays 10.0.2.2
+DRDM: routing table updated at ... s: 10.0.2.2 via <gateway> (interface N, candidate x)
+DRDM: sent N traffic packets to 10.0.2.2 via BACKUP_x
+DRDM: recovery mode=1 ... route updates=1
+DRDM: traffic sent=... delivered=... longest delivery gap=... ms starting at ... s
+```
+
+## Scope / limitations
+
+- Detection is based on UDP probe timeouts of the primary path.
+- Recovery is a one-time switch from the primary to the best backup at the moment the primary is declared dead. A backup that later degrades is not re-evaluated, and traffic does not return to the primary.
+- Routing-table recovery installs a host route for the destination on the source node. It is not a general routing protocol that repairs arbitrary routes network-wide.
+- Congestion is estimated from RTT inflation, not from queue lengths.
+- Experimental conclusions apply to the tested scenarios only. Additional conditions and random seeds would be needed to establish broader reliability.
